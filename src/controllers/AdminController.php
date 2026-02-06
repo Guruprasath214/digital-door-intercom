@@ -15,8 +15,8 @@ class AdminController {
         }
         $this->pdo = $pdo;
         $this->admin_nav = $admin_nav;
-        // Fetch notifications for admin (global notifications where user_id IS NULL)
-        $stmt = $this->pdo->prepare("SELECT * FROM notifications WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 5");
+        // Fetch notifications for admin (global notifications where user_id IS NULL) - limit for performance
+        $stmt = $this->pdo->prepare("SELECT id, message, created_at FROM notifications WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 5");
         $stmt->execute();
         $this->notifications = $stmt->fetchAll();
     }
@@ -24,78 +24,105 @@ class AdminController {
     public function actionDashboard() {
         $page_title = 'Admin Dashboard';
         
-        // Fetch counts from database
-        $block_count = $this->pdo->query("SELECT COUNT(*) FROM blocks")->fetchColumn();
-        $flat_count = $this->pdo->query("SELECT COUNT(*) FROM flats")->fetchColumn();
-        $resident_count = $this->pdo->query("SELECT COUNT(*) FROM users WHERE is_primary = TRUE")->fetchColumn();
-        $visitor_count = $this->pdo->query("SELECT COUNT(*) FROM visitors WHERE DATE(check_in) = CURRENT_DATE")->fetchColumn();
+        // Simple caching for dashboard data (5 minutes)
+        $cache_key = 'dashboard_cache';
+        $cache_time = 300; // 5 minutes
+        
+        if (!isset($_SESSION[$cache_key]) || (time() - ($_SESSION[$cache_key]['time'] ?? 0)) > $cache_time) {
+            // Fetch all counts in a single query for better performance
+            $counts_stmt = $this->pdo->query("SELECT 
+                (SELECT COUNT(*) FROM blocks) as block_count,
+                (SELECT COUNT(*) FROM flats) as flat_count,
+                (SELECT COUNT(*) FROM users WHERE is_primary = TRUE) as resident_count,
+                (SELECT COUNT(*) FROM visitors WHERE DATE(check_in) = CURRENT_DATE) as visitor_count");
+            $counts = $counts_stmt->fetch();
 
-        $stats = [
-            ['name' => 'Total Blocks', 'value' => $block_count, 'icon' => 'Building2', 'color' => 'bg-indigo-600', 'change' => 'Actual data'],
-            ['name' => 'Total Flats', 'value' => $flat_count, 'icon' => 'Home', 'color' => 'bg-blue-600', 'change' => 'Actual data'],
-            ['name' => 'Total Residents', 'value' => $resident_count, 'icon' => 'Users', 'color' => 'bg-emerald-600', 'change' => 'Actual data'],
-            ['name' => 'Visitors Today', 'value' => $visitor_count, 'icon' => 'UserCheck', 'color' => 'bg-amber-600', 'change' => 'Actual data'],
-        ];
-
-        // Fetch today's appointments
-        $stmt = $this->pdo->prepare("SELECT a.*, 
-                            u.name as resident_name,
-                            f.number as flat_number,
-                            b.name as block_name,
-                            COALESCE(v.name, a.visitor_name) as visitor_name
-                         FROM appointments a 
-                         LEFT JOIN users u ON a.user_id = u.id 
-                         LEFT JOIN flats f ON u.flat_id = f.id
-                         LEFT JOIN blocks b ON f.block_id = b.id
-                         LEFT JOIN visitors v ON a.visitor_id = v.id 
-                         WHERE DATE(a.appointment_time) = CURRENT_DATE 
-                         ORDER BY a.appointment_time ASC");
-        $stmt->execute();
-        $today_appointments = $stmt->fetchAll();
-
-        // Fetch recent visitors
-        $stmt = $this->pdo->prepare("SELECT v.*, f.number as flat_number, b.name as block_name, u.name as resident_name 
-                                     FROM visitors v 
-                                     LEFT JOIN flats f ON v.flat_id = f.id 
-                                     LEFT JOIN blocks b ON f.block_id = b.id 
-                                     LEFT JOIN users u ON u.flat_id = f.id
-                                     ORDER BY v.check_in DESC LIMIT 5");
-        $stmt->execute();
-        $recent_visitors = $stmt->fetchAll();
-
-        // Visitor trends (last 7 days, including zero-count days)
-        $trend_stmt = $this->pdo->prepare("SELECT DATE(check_in) as day, COUNT(*) as visitors
-                                           FROM visitors
-                                           WHERE check_in >= CURRENT_DATE - INTERVAL '6 days'
-                                           GROUP BY DATE(check_in)");
-        $trend_stmt->execute();
-        $trend_rows = $trend_stmt->fetchAll();
-        $trend_map = [];
-        foreach ($trend_rows as $row) {
-            $trend_map[$row['day']] = (int)$row['visitors'];
-        }
-        $visitor_data = [];
-        for ($i = 6; $i >= 0; $i--) {
-            $date = new DateTime("-$i days");
-            $key = $date->format('Y-m-d');
-            $visitor_data[] = [
-                'day' => $date->format('M d'),
-                'visitors' => $trend_map[$key] ?? 0,
+            $stats = [
+                ['name' => 'Total Blocks', 'value' => $counts['block_count'], 'icon' => 'Building2', 'color' => 'bg-indigo-600', 'change' => 'Actual data'],
+                ['name' => 'Total Flats', 'value' => $counts['flat_count'], 'icon' => 'Home', 'color' => 'bg-blue-600', 'change' => 'Actual data'],
+                ['name' => 'Total Residents', 'value' => $counts['resident_count'], 'icon' => 'Users', 'color' => 'bg-emerald-600', 'change' => 'Actual data'],
+                ['name' => 'Visitors Today', 'value' => $counts['visitor_count'], 'icon' => 'UserCheck', 'color' => 'bg-amber-600', 'change' => 'Actual data'],
             ];
-        }
 
-        // Occupancy distribution (Owned vs Rent)
-        $occ_stmt = $this->pdo->prepare("SELECT 
-                                            SUM(CASE WHEN occupancy_type = 'owned' THEN 1 ELSE 0 END) as owned,
-                                            SUM(CASE WHEN occupancy_type = 'rent' THEN 1 ELSE 0 END) as rent
-                                         FROM users");
-        $occ_stmt->execute();
-        $occ_row = $occ_stmt->fetch();
-        $occupancy = [[
-            'month' => 'All',
-            'owned' => (int)($occ_row['owned'] ?? 0),
-            'rent' => (int)($occ_row['rent'] ?? 0),
-        ]];
+            // Fetch today's appointments (limit to 10 for performance)
+            $stmt = $this->pdo->prepare("SELECT a.*, 
+                                u.name as resident_name,
+                                f.number as flat_number,
+                                b.name as block_name,
+                                COALESCE(v.name, a.visitor_name) as visitor_name
+                             FROM appointments a 
+                             LEFT JOIN users u ON a.user_id = u.id 
+                             LEFT JOIN flats f ON u.flat_id = f.id
+                             LEFT JOIN blocks b ON f.block_id = b.id
+                             LEFT JOIN visitors v ON a.visitor_id = v.id 
+                             WHERE DATE(a.appointment_time) = CURRENT_DATE 
+                             ORDER BY a.appointment_time ASC
+                             LIMIT 10");
+            $stmt->execute();
+            $today_appointments = $stmt->fetchAll();
+
+            // Fetch recent visitors
+            $stmt = $this->pdo->prepare("SELECT v.*, f.number as flat_number, b.name as block_name, u.name as resident_name 
+                                         FROM visitors v 
+                                         LEFT JOIN flats f ON v.flat_id = f.id 
+                                         LEFT JOIN blocks b ON f.block_id = b.id 
+                                         LEFT JOIN users u ON u.flat_id = f.id
+                                         ORDER BY v.check_in DESC LIMIT 5");
+            $stmt->execute();
+            $recent_visitors = $stmt->fetchAll();
+
+            // Visitor trends (last 7 days, including zero-count days)
+            $trend_stmt = $this->pdo->prepare("SELECT DATE(check_in) as day, COUNT(*) as visitors
+                                               FROM visitors
+                                               WHERE check_in >= CURRENT_DATE - INTERVAL '6 days'
+                                               GROUP BY DATE(check_in)");
+            $trend_stmt->execute();
+            $trend_rows = $trend_stmt->fetchAll();
+            $trend_map = [];
+            foreach ($trend_rows as $row) {
+                $trend_map[$row['day']] = (int)$row['visitors'];
+            }
+            $visitor_data = [];
+            for ($i = 6; $i >= 0; $i--) {
+                $date = new DateTime("-$i days");
+                $key = $date->format('Y-m-d');
+                $visitor_data[] = [
+                    'day' => $date->format('M d'),
+                    'visitors' => $trend_map[$key] ?? 0,
+                ];
+            }
+
+            // Occupancy distribution (Owned vs Rent)
+            $occ_stmt = $this->pdo->prepare("SELECT 
+                                                SUM(CASE WHEN occupancy_type = 'owned' THEN 1 ELSE 0 END) as owned,
+                                                SUM(CASE WHEN occupancy_type = 'rent' THEN 1 ELSE 0 END) as rent
+                                             FROM users");
+            $occ_stmt->execute();
+            $occ_row = $occ_stmt->fetch();
+            $occupancy = [[
+                'month' => 'All',
+                'owned' => (int)($occ_row['owned'] ?? 0),
+                'rent' => (int)($occ_row['rent'] ?? 0),
+            ]];
+
+            // Cache the data
+            $_SESSION[$cache_key] = [
+                'time' => time(),
+                'stats' => $stats,
+                'today_appointments' => $today_appointments,
+                'recent_visitors' => $recent_visitors,
+                'visitor_data' => $visitor_data,
+                'occupancy' => $occupancy
+            ];
+        } else {
+            // Use cached data
+            $cached = $_SESSION[$cache_key];
+            $stats = $cached['stats'];
+            $today_appointments = $cached['today_appointments'];
+            $recent_visitors = $cached['recent_visitors'];
+            $visitor_data = $cached['visitor_data'];
+            $occupancy = $cached['occupancy'];
+        }
 
         require VIEWS_PATH . '/layouts/admin_layout.php';
     }
