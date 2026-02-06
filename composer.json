@@ -1,0 +1,38 @@
+{
+  "name": "qr-intercom/php",
+  "description": "QR Intercom - Digital Door Management System (PHP Version)",
+  "type": "project",
+  "version": "1.0.0",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Development Team",
+      "email": "dev@qrintercom.com"
+    }
+  ],
+  "require": {
+    "php": ">=7.4.0",
+    "tecnickcom/tcpdf": "^6.6",
+    "phpoffice/phpspreadsheet": "^1.29",
+    "supabase/supabase-php": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "QRIntercom\\": "src/"
+    }
+  },
+  "scripts": {
+    "start": "php -S localhost:8000 -t public",
+    "test": "phpunit"
+  },
+  "keywords": [
+    "qr-code",
+    "intercom",
+    "door-management",
+    "residential",
+    "community"
+  ],
+  "config": {
+    "process-timeout": 0
+  }
+}

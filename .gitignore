@@ -1,0 +1,32 @@
+# Dependencies
+vendor/
+composer.lock
+
+# Environment and config files
+src/config/config.php
+src/config/db.php
+database.sql
+database_pg.sql
+
+# Logs
+*.log
+logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
